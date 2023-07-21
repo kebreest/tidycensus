@@ -1,0 +1,226 @@
+---
+title: "tidycensus"
+author: "KB"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+library(tidyverse)
+library(readr)
+```
+
+# Set up
+
+You will need a Census API key from this site if you don't already have one https://api.census.gov/data/key_signup.html
+
+### Install Packages
+```{r}
+install.packages(c("tidycensus", "tidyverse", "geofacet", "ggridges"))
+```
+
+### Call Package Library
+```{r}
+library(tidycensus)
+```
+
+### Census API Key
+Once activated, use the census_api_key() function to set your key as an environment variable
+
+```{r}
+#enter your personal API key in the quotes below
+census_api_key("e75e12abfef22a1130af840bea97849ed936e0a0", install = TRUE)
+```
+
+# Pull Data
+
+### Decennial data
+The get_decennial() function is used to acquire data from the decennial US Census. The get_acs() function is used to acquire data from the ACS
+The two required arguments are geography and variables for the functions to work; for 2020 Census data, use year = 2020. 
+
+```{r}
+#Decennial Census data are returned with four columns: GEOID, NAME, variable, and value
+pop20 <- get_decennial(
+  geography = "state",
+  variables = "P1_001N",
+  year = 2020
+)
+
+#you will see a longer message when you run this for the first time
+```
+
+- The Census Bureau is using differential privacy in an attempt to preserve respondent confidentiality in the 2020 Census data, which is required under US Code Title 13
+
+- Intentional errors are introduced into data, impacting the accuracy of small area counts (e.g. some blocks with children, but no adults)
+
+- Advocates argue that differential privacy is necessary to satisfy Title 13 requirements given modern database reconstruction technologies; critics contend that the method makes data less useful with no tangible privacy benefit
+
+```{r}
+#The table parameter can be used to obtain all related variables in a "table" at once
+
+table_p2 <- get_decennial(
+  geography = "state", 
+  table = "P2",
+  year = 2020
+)
+
+```
+### ACS data
+American Community Survey (ACS) data are available from the 1-year ACS since 2005 for geographies of population 65,000 and greater, and from the 5-year ACS for all geographies down to the block group level starting with the 2005-2009 dataset. get_acs() defaults to the 5-year ACS with the argument survey = "acs5", but 1-year ACS data are available using survey = "acs1".
+
+ACS data differ from decennial Census data as they are based on an annual sample of approximately 3 million households, rather than a more complete enumeration of the US population. In turn, ACS data points are estimates characterized by a margin of error. tidycensus will always return the estimate and margin of error together for any requested variables when using get_acs(). In turn, when requesting ACS data with tidycensus, it is not necessary to specify the "E" or "M" suffix for a variable name. Let’s fetch median household income data from the 2017-2021 ACS for counties in Vermont.
+
+```{r}
+vt <- get_acs(geography = "county", 
+              variables = c(medincome = "B19013_001"), 
+              state = "VT", 
+              year = 2021)
+
+vt
+```
+
+The output is similar to a call to get_decennial(), but instead of a value column, get_acs returns estimate and moe columns for the ACS estimate and margin of error, respectively. moe represents the default 90 percent confidence level around the estimate; this can be changed to 95 or 99 percent with the moe_level parameter in get_acs if desired.
+
+```{r}
+vt %>%
+  mutate(NAME = gsub(" County, Vermont", "", NAME)) %>%
+  ggplot(aes(x = estimate, y = reorder(NAME, estimate))) +
+  geom_errorbarh(aes(xmin = estimate - moe, xmax = estimate + moe)) +
+  geom_point(color = "red", size = 3) +
+  labs(title = "Household income by county in Vermont",
+       subtitle = "2017-2021 American Community Survey",
+       y = "",
+       x = "ACS estimate (bars represent margin of error)")
+```
+
+
+Information on available geographies, and how to specify them, can be found in the tidycensus documentation [https://walker-data.com/tidycensus/articles/basic-usage.html#geography-in-tidycensus-1]
+
+### Querying by state
+- For geographies available below the state level, the state parameter allows you to query data for a specific state
+- tidycensus translates state names and postal abbreviations internally, so you don't need to remember the FIPS codes!
+- Example: data on the Hispanic population in Michigan by county
+
+
+```{r}
+mi_hispanic <- get_decennial(
+  geography = "county", 
+  variables = "P2_002N", 
+  state = "MI",
+  year = 2020
+)
+
+```
+
+### Querying by state and county
+
+County names are also translated internally by tidycensus for sub-county queries, e.g. for Census tracts, block groups, and blocks
+
+```{r}
+washtenaw_hispanic <- get_decennial(
+  geography = "tract", 
+  variables = "P2_002N", 
+  state = "MI", 
+  county = "Washtenaw",
+  year = 2020
+)
+```
+
+### Searching for variables
+- To search for variables, use the load_variables() function along with a year and dataset
+- The View() function in RStudio allows for interactive browsing and filtering
+
+```{r}
+vars <- load_variables(2020, "pl")
+View(vars)
+```
+
+### Tables Available
+
+- H1: Occupancy status (by household)
+- P1: Race
+- P2: Race by Hispanic origin
+- P3: Race for the population 18+
+- P4: Race by Hispanic origin for the population 18+
+- P5: Group quarters status
+
+# Data Structure
+
+### "Tidy" or long-form data
+The default data structure returned by tidycensus is "tidy" or long-form data, with variables by geography stacked by row
+
+```{r}
+group_quarters <- get_decennial(
+  geography = "state", 
+  table = "P5", 
+  year = 2020
+)
+```
+
+### "Wide" data
+The argument output = "wide" spreads Census variables across the columns, returning one row per geographic unit and one column per variable
+
+```{r}
+group_quarters_wide <- get_decennial(
+  geography = "state", 
+  table = "P5",
+  year = 2020,
+  output = "wide"
+)
+```
+
+### Using named vectors of variables
+-  Census variables can be hard to remember; using a named vector to request variables will replace the Census IDs with a custom input
+-  In long form, these custom inputs will populate the variable column; in wide form, they will replace the column names
+
+```{r}
+vacancies_wide <- get_decennial(
+  geography = "county",
+  state = "MI",
+  variables = c(vacant_households = "H1_003N",
+                total_households = "H1_001N"),
+  output = "wide",
+  year = 2020
+)
+
+```
+
+# Example
+
+I need to get the population estimates for every town within 50 miles of Massachusetts borders so that I can identify the most populated cities on a map. I have a shapefile with the towns that i am exporting the attribute table from. I'm going to use tidycensus to pull all the town level population data from the relevant states, and then join that data to the tbale with only the towns i want.
+
+First I'm going to pull in the data to find out what states i need to pull
+```{r}
+#read in data
+BufferTowns <- read_csv("50miBufferTowns.csv")
+
+#create an object with the FIPS codes i need
+states <- unique(BufferTowns$STATEFP)
+towns <- "County Subdivision"
+tables <- c("B01003")
+years <- 2021
+outputs <- "tidy"
+```
+
+Then I'm going to get the data from the ACS using my object of states as a geography
+```{r}
+BufferTownsPop <-   get_acs(
+  geography = towns,
+  state = states,
+  table = tables,
+  year = years,
+  geometry = FALSE,
+  output = outputs)
+```
+
+Now im going to attempt to join only the populations i need based on geoids
+
+```{r}
+merged_data <- merge(BufferTowns, BufferTownsPop, by = "GEOID", all.x = TRUE)
+#that didnt work with some of the towns, but theyre not top pop towns so i dont really care
+
+write.csv(merged_data, "merged_data.csv")
+```
+
